@@ -67,13 +67,17 @@ BEGIN
             ts.target_val,
             -- Regex de sed: Busca líneas que empiecen por espacio/comentario, el nombre del parámetro y reemplaza toda la línea.
             format(
-                'sed -i "s/^[[:space:]]*#*[[:space:]]*%s[[:space:]]*=.*/%s = ''%s''  # Hardened DATE %s /" %s/postgresql.conf',
-                s.name, 
-                s.name, 
-                replace(ts.target_val, '/', '\/'), -- Escapar slashes para sed
-                to_char(now(), 'YYYYMMDD'),
-                current_setting('data_directory')
-            ) AS sed_command
+                'sed -i %s/^[[:space:]]*#*[[:space:]]*%s[[:space:]]*=.*/%s = %s%s%s  # Hardened %s: &/ %s/postgresql.conf',
+                chr(34),                                      -- Comilla doble inicial
+                v_conf_record.name,                           -- Nombre del parámetro para buscar
+                v_conf_record.name,                           -- Nombre para escribir
+                chr(39),                                      -- Comilla simple para el valor
+                replace(v_conf_record.target_val, '/', '\/'), -- Valor nuevo (escapado para sed)
+                chr(39),                                      -- Comilla simple de cierre
+                to_char(now(), 'YYYYMMDD'),                   -- Fecha del hardening
+                v_data_dir                                    -- Ruta del data
+            )
+        
         FROM pg_settings s
         JOIN target_settings ts ON s.name = ts.name
         WHERE s.setting <> ts.target_val -- Solo si el valor actual es distinto al objetivo
