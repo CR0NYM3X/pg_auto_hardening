@@ -9,7 +9,7 @@ DECLARE
     v_ex_message       TEXT;
 BEGIN
     -- 1. Configuración de entorno
-    SET client_min_messages = notice;
+    -- SET client_min_messages = notice;
 
     -- 2. Respaldo de seguridad
     BEGIN
