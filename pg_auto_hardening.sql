@@ -3,20 +3,16 @@ DECLARE
     v_conf_record      RECORD;
     v_data_dir         TEXT := current_setting('data_directory');
     v_backup_cmd       TEXT;
-    v_modify_cmd       TEXT;
     v_exec_wrapper     TEXT;
     
     -- Variables para diagnóstico
     v_ex_message       TEXT;
-    v_ex_detail        TEXT;
 BEGIN
     -- 1. Configuración de entorno
     SET client_min_messages = notice;
 
-    -- 2. Respaldo de seguridad del archivo de configuración
+    -- 2. Respaldo de seguridad
     BEGIN
-        SET client_min_messages = 'notice';
-
         v_backup_cmd := format(
             'mkdir -p %1$s/backup_psql_conf && cp %1$s/postgresql.conf %1$s/backup_psql_conf/postgresql.conf_%2$s',
             v_data_dir,
@@ -27,10 +23,10 @@ BEGIN
         RAISE NOTICE 'CHECK: Respaldo de postgresql.conf creado exitosamente.';
     EXCEPTION WHEN OTHERS THEN
         GET STACKED DIAGNOSTICS v_ex_message = MESSAGE_TEXT;
-        RAISE EXCEPTION 'CRITICAL: Fallo al crear backup del archivo CONF. Detalle: %', v_ex_message;
+        RAISE EXCEPTION 'CRITICAL: Fallo al crear backup. Detalle: %', v_ex_message;
     END;
 
-    -- 3. Identificación y Aplicación de Hardening
+    -- 3. Aplicación de Hardening
     FOR v_conf_record IN
         WITH target_settings(name, target_val) AS (
             VALUES 
@@ -65,30 +61,24 @@ BEGIN
         SELECT 
             s.name, 
             ts.target_val,
-            -- Regex de sed: Busca líneas que empiecen por espacio/comentario, el nombre del parámetro y reemplaza toda la línea.
+            -- Ajuste en la construcción del comando SED para evitar fallos de shell
+            -- Se usa comilla simple interna y se asegura espacio antes de v_data_dir
             format(
-                'sed -i %s/^[[:space:]]*#*[[:space:]]*%s[[:space:]]*=.*/%s = %s%s%s  # Hardened %s: &/ %s/postgresql.conf',
-                chr(34),                                      -- Comilla doble inicial
-                v_conf_record.name,                           -- Nombre del parámetro para buscar
-                v_conf_record.name,                           -- Nombre para escribir
-                chr(39),                                      -- Comilla simple para el valor
-                replace(v_conf_record.target_val, '/', '\/'), -- Valor nuevo (escapado para sed)
-                chr(39),                                      -- Comilla simple de cierre
-                to_char(now(), 'YYYYMMDD'),                   -- Fecha del hardening
-                v_data_dir                                    -- Ruta del data
-            )
-        
+                'sed -i "s|^[[:space:]]*#*[[:space:]]*%1$s[[:space:]]*=.*|%1$s = ''%2$s''  # Hardened %3$s: &|" %4$s/postgresql.conf',
+                s.name, 
+                ts.target_val, 
+                to_char(now(), 'YYYYMMDD'), 
+                v_data_dir
+            ) AS sed_command
         FROM pg_settings s
         JOIN target_settings ts ON s.name = ts.name
-        WHERE s.setting <> ts.target_val -- Solo si el valor actual es distinto al objetivo
+        WHERE s.setting <> ts.target_val
            OR (s.name = 'log_line_prefix' AND replace(s.setting, ' ', '') <> replace(ts.target_val, ' ', ''))
-
     LOOP
         BEGIN
-            v_exec_wrapper := format('COPY (SELECT 1) TO PROGRAM %L', v_conf_record.sed_command);
-            EXECUTE v_exec_wrapper;
-            
-            RAISE NOTICE 'SUCCESS: Parámetro [%] actualizado a [%]', v_conf_record.name, v_conf_record.target_val;
+            -- Se ejecuta el comando directamente
+            EXECUTE format('COPY (SELECT 1) TO PROGRAM %L', v_conf_record.sed_command);
+            RAISE NOTICE 'SUCCESS: Parámetro [%] actualizado.', v_conf_record.name;
             
         EXCEPTION WHEN OTHERS THEN
             GET STACKED DIAGNOSTICS v_ex_message = MESSAGE_TEXT;
@@ -96,7 +86,7 @@ BEGIN
         END;
     END LOOP;
 
-    -- 4. Recarga de configuración
+    -- 4. Recarga
     PERFORM pg_reload_conf();
     RAISE NOTICE 'PROCESS COMPLETE: Configuración recargada. Verifique logs del motor para parámetros que requieren reinicio.';
 
